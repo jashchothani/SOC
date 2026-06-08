@@ -4,9 +4,12 @@ Utilizes the requests library for minimal dependencies and includes a robust moc
 """
 import json
 import requests
+import threading
+import time
 from typing import Dict, Any, Optional
 from utils.logger import logger
 from config.settings import settings
+from utils.error_handler import retry_on_exception
 
 class GeminiClient:
     def __init__(self):
@@ -21,13 +24,51 @@ class GeminiClient:
             logger.info("Gemini AI Client initialized in MOCK MODE.")
         else:
             logger.info("Gemini AI Client initialized in PRODUCTION MODE.")
+            
+        # Local client-side rate limiting configuration
+        self.request_lock = threading.Lock()
+        self.request_timestamps = []
+        self.max_requests_per_minute = 5
+        self.rate_limit_window_seconds = 60.0
+
+    def _rate_limit(self):
+        """Thread-safe rate limiter enforcing at most max_requests_per_minute per window."""
+        with self.request_lock:
+            while True:
+                now = time.time()
+                # Filter timestamps to keep only those within the active window
+                self.request_timestamps = [t for t in self.request_timestamps if now - t < self.rate_limit_window_seconds]
+                
+                if len(self.request_timestamps) < self.max_requests_per_minute:
+                    # Capacity is available; record the timestamp and proceed
+                    self.request_timestamps.append(now)
+                    break
+                else:
+                    # Enforce throttling based on the oldest request timestamp in the window
+                    wait_time = self.request_timestamps[0] + self.rate_limit_window_seconds - now
+                    if wait_time > 0:
+                        logger.warning(
+                            f"Local rate limit reached ({self.max_requests_per_minute} requests per {self.rate_limit_window_seconds}s). "
+                            f"Throttling Gemini API request; sleeping for {wait_time:.1f} seconds..."
+                        )
+                        time.sleep(wait_time)
+
+    @retry_on_exception(retries=3, backoff_factor=2.0, exceptions=(requests.RequestException,))
+    def _post_with_retry(self, url: str, headers: dict, json_payload: dict) -> requests.Response:
+        """Helper to post content with exponential backoff on request exceptions (including HTTP errors like 429)."""
+        response = requests.post(url, headers=headers, json=json_payload, timeout=15)
+        response.raise_for_status()
+        return response
 
     def _call_gemini_api(self, prompt: str, system_instruction: str = None) -> Optional[dict]:
         """Makes direct HTTP call to Gemini API expecting a JSON response."""
         if self.is_mock:
             return None
             
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
+        
+        # Enforce local rate limiting before executing the call
+        self._rate_limit()
         
         # Format the request payload for Gemini API
         contents = {
@@ -53,9 +94,7 @@ class GeminiClient:
         headers = {"Content-Type": "application/json"}
         
         try:
-            response = requests.post(url, headers=headers, json=contents, timeout=15)
-            response.raise_for_status()
-            
+            response = self._post_with_retry(url, headers, contents)
             res_data = response.json()
             
             # Extract content from Gemini response structure

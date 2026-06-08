@@ -1,5 +1,15 @@
 """
-Configuration management settings loader.
+================================================================================
+SETTINGS MANAGEMENT ENGINE - SOC AUTOMATION PLATFORM
+================================================================================
+This file is responsible for parsing config files, applying environment
+variable overrides, and validating default platform behaviors.
+
+CRITICAL IMPLEMENTATIONS:
+- Default settings dict (API keys, monitoring intervals, thread limits).
+- Deep dictionary merging for layered config validation.
+- Auto-triggering mock mode when client APIs are not present.
+================================================================================
 """
 import os
 import json
@@ -11,7 +21,6 @@ DEFAULTS: Dict[str, Any] = {
         "virustotal": "",
         "abuseipdb": "",
         "alienvault": "",
-        "shodan": "",
         "gemini": ""
     },
     "mock_mode": True,  # Defaults to True if api_keys are empty
@@ -30,8 +39,37 @@ DEFAULTS: Dict[str, Any] = {
     }
 }
 
+def _load_dotenv(dotenv_path: str = None):
+    """
+    Reads a .env file and updates os.environ with the key-value pairs if the file exists.
+    Ignores comments, empty lines, and strips quotes.
+    """
+    if dotenv_path is None:
+        # Check relative to settings.py parent (which is root of SOC project since settings.py is in config/)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        dotenv_path = os.path.join(base_dir, ".env")
+        
+    if os.path.exists(dotenv_path):
+        try:
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        val = val.strip()
+                        # Strip single or double quotes
+                        if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                            val = val[1:-1]
+                        os.environ[key] = val
+        except Exception as e:
+            print(f"Error loading .env file from {dotenv_path}: {e}")
+
 class Settings:
     def __init__(self, config_path: str = "config.json"):
+        _load_dotenv()
         self.config_path = config_path
         self.config = DEFAULTS.copy()
         self.load_config()
@@ -60,7 +98,7 @@ class Settings:
     def override_from_env(self):
         """Override configuration with environment variables if present."""
         # API Keys override
-        for key in ["virustotal", "abuseipdb", "alienvault", "shodan", "gemini"]:
+        for key in ["virustotal", "abuseipdb", "alienvault", "gemini"]:
             env_val = os.getenv(f"SOC_{key.upper()}_API_KEY")
             if env_val:
                 self.config["api_keys"][key] = env_val

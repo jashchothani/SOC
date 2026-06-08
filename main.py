@@ -1,6 +1,18 @@
 """
-Enterprise SOC Monitoring & Threat Intelligence Platform - Orchestrator.
-Main controller loading modules, launching background threads, and handling events.
+================================================================================
+SOC PLATFORM ORCHESTRATION ENGINE
+================================================================================
+This is the core controller of the SOC Automation Platform. It initializes
+working directories, spawns background monitoring agent threads (Windows metrics,
+process logs, DNS queries, network sockets, SCM services, file changes),
+interfaces with threat intelligence caches, and routes incoming log entries into
+the UEBA behavioral profiling engine.
+
+CRITICAL PROCESS LIFECYCLE:
+1. ThreadPoolExecutor configuration for asynchronous threat enrichment workers.
+2. Background thread scheduling for continuous system inspections.
+3. Central event ingestion logic mapping monitoring flows to analytics.
+================================================================================
 """
 import os
 import time
@@ -137,8 +149,15 @@ def run_connection_monitor():
                 
             new_conns = connection_monitor.scan(dns_snapshot)
             for event in new_conns:
-                # Enqueue threat intelligence lookup in the background thread pool
-                thread_pool.submit(process_threat_enrichment, event)
+                # Enqueue threat intelligence lookup in the background thread pool if not stopping
+                if not stop_event.is_set():
+                    try:
+                        thread_pool.submit(process_threat_enrichment, event)
+                    except RuntimeError as e:
+                        if "shutdown" in str(e):
+                            logger.warning("Could not submit threat enrichment task: thread pool is shutting down.")
+                        else:
+                            raise
                 # Ingest raw event first
                 ingest_event(event)
         except Exception as e:
@@ -174,6 +193,10 @@ def main():
     register_alert_callback(ingest_event)
     
     logger.info("Orchestrator initialized. Loading modules...")
+    
+    # Trigger UEBA engine console startup dashboard
+    ueba_engine.initialize_startup()
+    
     if settings.mock_mode:
         logger.warning("[MOCK MODE ACTIVE] Simulated APIs and metrics enabled.")
     else:
@@ -222,7 +245,14 @@ def main():
             
             # Check file integrity baseline every 60 seconds
             if time.time() - last_integrity_time >= 60.0:
-                thread_pool.submit(run_integrity_check, integrity_monitor, settings.file_monitor_path)
+                if not stop_event.is_set():
+                    try:
+                        thread_pool.submit(run_integrity_check, integrity_monitor, settings.file_monitor_path)
+                    except RuntimeError as e:
+                        if "shutdown" in str(e):
+                            logger.warning("Could not submit integrity check task: thread pool is shutting down.")
+                        else:
+                            raise
                 last_integrity_time = time.time()
                 
     except KeyboardInterrupt:

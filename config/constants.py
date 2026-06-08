@@ -1,5 +1,15 @@
 """
-Global constant definitions for the Security Monitoring Platform.
+================================================================================
+GLOBAL CONSTANTS - SOC PLATFORM DEFINITIONS
+================================================================================
+This file acts as a central repository for all static metadata configurations,
+severity levels, directory layout locations, and target Threat Intel endpoints.
+
+IMPORTANT DEFINITIONS:
+- SEVERITY LEVELS (INFO, WARNING, ERROR, CRITICAL)
+- SYSTEM LOGGING DIRECTORIES (data/events, data/logs, data/baselines, etc.)
+- THREAT INTEL API CONNECTOR BASE URL PATHS
+================================================================================
 """
 
 # Severity levels conforming to enterprise SOC/SIEM standards
@@ -42,5 +52,3 @@ EVENT_SYSTEM_ALERT = "system_alert"
 VIRUSTOTAL_BASE_URL = "https://www.virustotal.com/api/v3"
 ABUSEIPDB_BASE_URL = "https://api.abuseipdb.com/api/v2"
 ALIENVAULT_BASE_URL = "https://otx.alienvault.com/api/v1"
-SHODAN_BASE_URL = "https://api.shodan.io"
-SHODAN_INTERNETDB_URL = "https://internetdb.shodan.io"

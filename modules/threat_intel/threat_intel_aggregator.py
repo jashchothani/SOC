@@ -1,6 +1,17 @@
 """
-Threat Intelligence Aggregator.
-Runs lookups in parallel, normalizes threat scores, and caches results to disk.
+================================================================================
+THREAT INTELLIGENCE AGGREGATOR ENGINE
+================================================================================
+This engine orchestrates querying threat feeds in parallel (VirusTotal,
+AbuseIPDB, AlienVault OTX), normalizes threat score outcomes, scales metrics,
+and caches reports to minimize API query rates.
+
+CRITICAL LOGIC & ENRICHMENTS:
+- ThreadPoolExecutor parallel indicator fetches.
+- Composite risk calculation (VT=50%, AbuseIPDB=30%, AlienVault=20%).
+- Persistent JSON threat database caching.
+- Dynamic normalization of metadata schema.
+================================================================================
 """
 import os
 import uuid
@@ -16,7 +27,6 @@ from config.constants import DIR_BASELINES, EVENT_THREAT_INTEL, SEVERITY_WARNING
 from modules.virustotal.virustotal import VirusTotalClient
 from modules.threat_intel.abuseipdb import check_ip_abuse
 from modules.threat_intel.alienvault import check_indicator_otx
-from modules.threat_intel.shodan_lookup import check_ip_shodan
 
 class ThreatIntelAggregator:
     def __init__(self, cache_filename: str = "threat_intel_cache.json"):
@@ -92,7 +102,6 @@ class ThreatIntelAggregator:
                 tasks["virustotal"] = executor.submit(VirusTotalClient.check_ip, indicator)
                 tasks["abuseipdb"] = executor.submit(check_ip_abuse, indicator)
                 tasks["alienvault"] = executor.submit(check_indicator_otx, indicator, "ip")
-                tasks["shodan"] = executor.submit(check_ip_shodan, indicator)
             elif indicator_type == "domain":
                 tasks["virustotal"] = executor.submit(VirusTotalClient.check_domain, indicator)
                 tasks["alienvault"] = executor.submit(check_indicator_otx, indicator, "domain")
@@ -144,21 +153,13 @@ class ThreatIntelAggregator:
             if pulse_count > 0:
                 is_malicious = True
                 
-        # Shodan details parsing
-        shodan = raw.get("shodan") or {}
-        shodan_vulns = []
-        if shodan and "vulns" in shodan:
-            shodan_vulns = shodan.get("vulns", [])
-            if len(shodan_vulns) > 0:
-                is_malicious = True
-
         # Calculate composite reputation score (0 to 100)
-        # Weighting: VT = 40%, AbuseIPDB = 30%, AlienVault = 20%, Shodan = 10%
+        # Weighting: VT = 50%, AbuseIPDB = 30%, AlienVault = 20% (Shodan removed)
         score_components = []
         
         if vt_stats:
             vt_ratio = (positives / total_scans) if total_scans > 0 else 0
-            score_components.append(vt_ratio * 100 * 0.40)
+            score_components.append(vt_ratio * 100 * 0.50)
             
         if indicator_type == "ip" and abuse:
             score_components.append(abuse_score * 0.30)
@@ -167,11 +168,6 @@ class ThreatIntelAggregator:
             # Scale OTX by count of pulses (capped at 5 pulses for 100%)
             otx_score = min((pulse_count / 5.0) * 100, 100)
             score_components.append(otx_score * 0.20)
-            
-        if indicator_type == "ip" and shodan:
-            # Scale by presence of vulns
-            shodan_score = 100 if len(shodan_vulns) > 0 else 0
-            score_components.append(shodan_score * 0.10)
             
         if score_components:
             # Sum up weights relative to components queried
@@ -218,11 +214,6 @@ class ThreatIntelAggregator:
                 "alienvault": {
                     "status": "success" if otx and "error" not in otx else "failed",
                     "pulse_count": pulse_count
-                },
-                "shodan": {
-                    "status": "success" if shodan and "error" not in shodan else "failed",
-                    "ports": shodan.get("ports", []),
-                    "vulns": shodan_vulns
                 }
             }
         }

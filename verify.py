@@ -1,9 +1,35 @@
 """
-Verification script for SOC Platform.
-Performs unit tests on utility validators, exceptions, Threat Intel mocks, and UEBA risk scores.
+================================================================================
+SOC PLATFORM VERIFICATION TEST ENGINE
+================================================================================
+This script performs programmatic verification tests on validators, exception handlers,
+threat intelligence caches/composite scoring (excluding Shodan), and UEBA baseline logic.
+
+IMPORTANT CHECKS:
+1. Validator string matching.
+2. Error management callback loop integration.
+3. Threat Intel re-weighted composite score (VT=50%, AbuseIPDB=30%, AlienVault=20%).
+4. Standard and advanced UEBA profile metrics (terminated user, privileged commands, MFA).
+5. AI analysis client initialization mocks.
+================================================================================
 """
 import os
 import sys
+
+# Force mock mode globally for all tests BEFORE importing modules that inspect settings at load-time
+from config.settings import settings
+settings.config["mock_mode"] = True
+
+# Clean up baseline DB before importing ueba_engine to ensure a fresh, clean database seeding
+import os
+from config.constants import DIR_BASELINES
+profiles_path = os.path.join(DIR_BASELINES, "ueba_profiles.json")
+if os.path.exists(profiles_path):
+    try:
+        os.remove(profiles_path)
+    except Exception:
+        pass
+
 from utils.logger import logger
 from utils.validators import is_valid_ip, is_valid_domain, is_valid_hash
 from utils.error_handler import register_alert_callback, handle_exception
@@ -62,6 +88,9 @@ def run_tests():
     # Test 3: Threat Intelligence Mock Outputs
     print("[*] Test 3: Threat Intelligence Aggregator (Mock Mode)...")
     total_tests += 1
+    # Clear cache to guarantee fresh query outputs under mock mode
+    threat_intel_aggregator.cache = {}
+    
     # Check regular IP vs malicious IP ends with .66
     clean_ip_report = threat_intel_aggregator.lookup("8.8.8.8", "ip")
     malicious_ip_report = threat_intel_aggregator.lookup("192.168.1.66", "ip")
@@ -177,6 +206,59 @@ def run_tests():
             print(f"    [-] Failed to generate correct firewall rule. Got: {firewall_rule}")
     else:
         print("    [-] Network analyzer failed to flag high-risk connection event.")
+
+    # Test 8: Team 9 Advanced UEBA Detections (MFA, Privileged Commands, Terminated Users)
+    print("[*] Test 8: Advanced UEBA Datapoints & Correlation Rules...")
+    total_tests += 1
+    
+    # 8a. Test Terminated employee alert
+    terminated_event = {
+        "event_id": "EVT-TEST-008A",
+        "event_type": "process_created",
+        "module": "windows_process",
+        "data": {
+            "name": "chrome.exe",
+            "username": "terminated_alice"
+        }
+    }
+    alerts = ueba_engine.process_event(terminated_event)
+    has_term_alert = any(a["data"]["deviation_type"] == "terminated_user_activity" for a in alerts)
+    
+    # 8b. Test unwhitelisted privileged command execution
+    priv_event = {
+        "event_id": "EVT-TEST-008B",
+        "event_type": "process_created",
+        "module": "windows_process",
+        "data": {
+            "name": "mimikatz.exe",
+            "username": "developer_bob"
+        }
+    }
+    priv_alerts = ueba_engine.process_event(priv_event)
+    has_priv_alert = any(a["data"]["deviation_type"] == "unusual_privileged_command" for a in priv_alerts)
+    
+    # 8c. Test MFA auth failure lock
+    mfa_failures = []
+    for i in range(3):
+        mfa_event = {
+            "event_id": f"EVT-TEST-008C-{i}",
+            "event_type": "auth_failed",
+            "module": "auth_service",
+            "data": {
+                "user": "developer_bob",
+                "auth_method": "mfa_push",
+                "status": "failed"
+            }
+        }
+        mfa_failures.extend(ueba_engine.process_event(mfa_event))
+        
+    has_mfa_alert = any(a["data"]["deviation_type"] == "mfa_fatigue_or_brute_force" for a in mfa_failures)
+    
+    if has_term_alert and has_priv_alert and has_mfa_alert:
+        print(f"    [+] Passed all advanced Team 9 UEBA correlation detections (Terminated User, Admin Command, MFA Fatigue).")
+        passed_tests += 1
+    else:
+        print(f"    [-] Advanced UEBA tests failed. Terminated alert: {has_term_alert}, Privileged alert: {has_priv_alert}, MFA alert: {has_mfa_alert}")
 
     print("\n" + "="*50)
     print(f"      VERIFICATION RESULTS: {passed_tests}/{total_tests} PASSED")
